@@ -1,30 +1,6 @@
 #include <iostream>
 #include <windows.h>
 
-// [ParseError]:
-void ParseError()
-{
-    char* msg = nullptr;
-    if (FormatMessageA(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
-        NULL,
-        GetLastError(),
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), // Default language.
-        (LPTSTR)& msg,
-        0,
-        NULL
-    ) != 0)
-    {
-        if (msg != nullptr)
-        {
-            std::cerr << "[ - ] " << msg << "\n";
-            delete[] msg;
-        }
-    }
-}
-// [/ParseError]
-
-
 // [FileIsExist]:
 bool FileIsExist(const char* szFileName)
 {
@@ -34,7 +10,7 @@ bool FileIsExist(const char* szFileName)
     }
 
     WIN32_FIND_DATA wfd;
-    HANDLE hFile = FindFirstFile(szFileName, &wfd);
+    HANDLE hFile = FindFirstFileA(szFileName, &wfd);
     if (hFile != INVALID_HANDLE_VALUE)
     {
         FindClose(hFile);
@@ -52,7 +28,7 @@ int main(int argc, char* argv[])
     {
         std::cout
             << "\n Usage:"
-            << "\n   pe-file[64].exe"
+            << "\n   pe-file.exe"
             << "\n      [*.exe || *.dll]  - input PE file"
             << "\n      [*.dll]           - will be added to the import table"
             << "\n      [function]        - imported function"
@@ -78,12 +54,11 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
-    setlocale(LC_ALL, "Russian");
-
     std::cout << "PE file:   " << pe_file << "\n";
     std::cout << "DLL:       " << dll_name << "\n";
     std::cout << "Function:  " << func_name << "\n";
     std::cout << "\n";
+
 
     typedef struct {
         DWORD ZeroDword;
@@ -97,79 +72,82 @@ int main(int argc, char* argv[])
     IMAGE_SECTION_HEADER* sect;
     
 
-    HANDLE hFile = CreateFile(pe_file.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE)
+    HANDLE hFile = CreateFileA(
+        pe_file.c_str(),
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    if (!hFile) // Ошибка при открытии файла.
     {
-        std::cerr << "Ошибка при открытии файла: ";
-        ParseError();
+        std::cerr << "[ - ] CreateFileA failed.\n";
         return EXIT_FAILURE;
     }
 
-    HANDLE hFileMap = CreateFileMapping(hFile, NULL, PAGE_READWRITE, 0, 0, NULL);
+    HANDLE hFileMap = CreateFileMappingA(hFile, NULL, PAGE_READWRITE, 0, 0, NULL);
+    if (!hFileMap) // Ошибка при вызове CreateFileMappingA().
+    {
+        std::cerr << "[ - ] CreateFileMappingA failed.\n";
+        CloseHandle(hFile);
+        return EXIT_FAILURE;
+    }
     CloseHandle(hFile);
 
-    if (hFileMap == NULL)
+    LPVOID pFileBegin = MapViewOfFile(hFileMap, FILE_MAP_WRITE, 0, 0, sizeof(IMAGE_DOS_HEADER));
+    if (!pFileBegin) // Ошибка при вызове MapViewOfFile().
     {
-        std::cerr << "Ошибка при вызове CreateFileMapping(): ";
-        ParseError();
-        return 1;
+        std::cerr << "[ - ] MapViewOfFile failed.\n";
+        CloseHandle(hFileMap);
+        return EXIT_FAILURE;
     }
 
-    int size = sizeof(IMAGE_DOS_HEADER);
-
-    LPVOID fBeg = MapViewOfFile(hFileMap, FILE_MAP_WRITE, 0, 0, size);
-    if (fBeg == NULL)
-    {
-        std::cerr << "Ошибка при вызове MapViewOfFile(): ";
-        ParseError();
-        return 1;
-    }
 
     // Определяем смещение РЕ-заголовка.
-    mz_head = reinterpret_cast<IMAGE_DOS_HEADER*>(fBeg);
+    mz_head = reinterpret_cast<IMAGE_DOS_HEADER*>(pFileBegin);
     DWORD peOffset = mz_head->e_lfanew;
-    UnmapViewOfFile(fBeg);
+    UnmapViewOfFile(pFileBegin);
 
     // Отображаем в память с учетом смещения до РЕ-заголовка.
-    size = peOffset + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) + sizeof(IMAGE_OPTIONAL_HEADER);
+    int size = peOffset + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) + sizeof(IMAGE_OPTIONAL_HEADER);
 
-    fBeg = MapViewOfFile(hFileMap, FILE_MAP_READ, 0, 0, size);
-    if (fBeg == NULL)
+    pFileBegin = MapViewOfFile(hFileMap, FILE_MAP_READ, 0, 0, size);
+    if (!pFileBegin) // Ошибка при вызове MapViewOfFile().
     {
-        std::cerr << "Ошибка при вызове MapViewOfFile(): ";
-        ParseError();
+        std::cerr << "[ - ] MapViewOfFile failed.\n";
         CloseHandle(hFileMap);
-        return 1;
+        return EXIT_FAILURE;
     }
 
-    mz_head = reinterpret_cast<IMAGE_DOS_HEADER*>(fBeg);
-    pe_head = reinterpret_cast<IMAGE_FILE_HEADER*>((DWORD)fBeg + peOffset);
+    mz_head = reinterpret_cast<IMAGE_DOS_HEADER*>(pFileBegin);
+    pe_head = reinterpret_cast<IMAGE_FILE_HEADER*>((DWORD)pFileBegin + peOffset);
 
 
     // Проверяем, PE или не PE файл.
     char pe[] = "PE\0\0";
-    if (strcmp(pe, (const char*)pe_head) != 0)
+    if (strcmp(pe, (const char*)pe_head) != 0) // Этот файл не является Portable Executable - файлом.
     {
-        std::cerr << "Этот файл не является Portable Executable - файлом.\n";
-        UnmapViewOfFile(fBeg);
+        std::cerr << "[ - ] This file is not a PE file.\n";
+        UnmapViewOfFile(pFileBegin);
         CloseHandle(hFileMap);
-        return 1;
+        return EXIT_FAILURE;
     }
-    UnmapViewOfFile(fBeg);
+    UnmapViewOfFile(pFileBegin);
 
-    // По новой отображаем файл в память поностью.
-    fBeg = MapViewOfFile(hFileMap, FILE_MAP_WRITE, 0, 0, 0);
-    if (fBeg == NULL)
-    {
-        std::cerr << "Ошибка при вызове MapViewOfFile(): ";
-        ParseError();
+    // По новой отображаем файл в память полностью.
+    pFileBegin = MapViewOfFile(hFileMap, FILE_MAP_WRITE, 0, 0, 0);
+    if (!pFileBegin)
+    { // Ошибка при вызове MapViewOfFile().
+        std::cerr << "[ - ] MapViewOfFile failed.\n";
         CloseHandle(hFileMap);
-        return 1;
+        return EXIT_FAILURE;
     }
 
 
-    mz_head = reinterpret_cast<IMAGE_DOS_HEADER*>(fBeg);
-    pe_head = reinterpret_cast<IMAGE_FILE_HEADER*>((DWORD)fBeg + peOffset + sizeof(DWORD));
+    mz_head = reinterpret_cast<IMAGE_DOS_HEADER*>(pFileBegin);
+    pe_head = reinterpret_cast<IMAGE_FILE_HEADER*>((DWORD)pFileBegin + peOffset + sizeof(DWORD));
     pe_opt_head = reinterpret_cast<IMAGE_OPTIONAL_HEADER*>((DWORD)pe_head + sizeof(IMAGE_FILE_HEADER));
 
 
@@ -180,8 +158,7 @@ int main(int argc, char* argv[])
     // Ищем секцию с таблицей импорта...
     sect = reinterpret_cast<IMAGE_SECTION_HEADER*>((DWORD)pe_opt_head + sizeof(IMAGE_OPTIONAL_HEADER));
 
-    int i;
-    for (i = 0; i < pe_head->NumberOfSections; i++)
+    for (int i = 0; i < pe_head->NumberOfSections; i++)
     {
         if (ImportRVA < sect->VirtualAddress)
         {
@@ -192,22 +169,22 @@ int main(int argc, char* argv[])
         sect++;
     }
 
-    if (sect_num == -1)
+    if (sect_num == -1) // Данная программа не использует динамические библиотеки.
     {
-        std::cerr << "Данная программа не использует динамические библиотеки!\n";
-        UnmapViewOfFile(fBeg);
+        std::cerr << "[ - ] This program does not use dynamic libraries.\n";
+        UnmapViewOfFile(pFileBegin);
         CloseHandle(hFileMap);
-        return 1;
+        return EXIT_FAILURE;
     }
 
     sect++;
 
     // Next after import table section RVA
-    DWORD AfterImportSecBeg = (DWORD)fBeg + sect->PointerToRawData;
+    DWORD AfterImportSecBeg = (DWORD)pFileBegin + sect->PointerToRawData;
     sect--;
 
     // Получаем файловый указатель на раздел c  таблицей импорта.
-    LPVOID ImportSecBeg = reinterpret_cast<LPVOID>((DWORD)fBeg + sect->PointerToRawData);
+    LPVOID ImportSecBeg = reinterpret_cast<LPVOID>((DWORD)pFileBegin + sect->PointerToRawData);
 
 
     // Вычисляем смещение таблицы импорта в секции импорта относительно ее начала (секции).
@@ -218,23 +195,24 @@ int main(int argc, char* argv[])
 
     IMAGE_IMPORT_DESCRIPTOR* DLLInfo = (IMAGE_IMPORT_DESCRIPTOR*)ImportTable;
     LPVOID DLLName;
-    DWORD DLLCounter = 0;
+    DWORD dwDLLCounter = 0;
 
     while (DLLInfo->Name != NULL)
     {
-        DLLCounter++;
+        dwDLLCounter++;
         DLLName = reinterpret_cast<LPVOID>((DWORD)DLLInfo->Name - sect->VirtualAddress);
         DLLName = reinterpret_cast<LPVOID>((DWORD)ImportSecBeg + (DWORD)DLLName);
 
-        std::cout << DLLCounter << "->" << (char*)DLLName << "\n";
+        std::cout << dwDLLCounter << " -> " << (char*)DLLName << "\n";
 
         DLLInfo++;
     }
-    std::cout << "Всего используется " << DLLCounter << " библиотек.\n";
+
+    std::cout << "\nTotal used DLL: " << dwDLLCounter << "\n"; // Всего используется библиотек.
 
 
     // Counting needed size in bytes for new import table.
-    DWORD NewImportTableSize = sizeof(IMAGE_IMPORT_DESCRIPTOR) * (DLLCounter + 2);
+    DWORD NewImportTableSize = sizeof(IMAGE_IMPORT_DESCRIPTOR) * (dwDLLCounter + 2);
 
     // Получаем файловый указатель на конец секции импорта.
     LPVOID pos = reinterpret_cast<LPVOID>(AfterImportSecBeg - 1);
@@ -266,29 +244,23 @@ int main(int argc, char* argv[])
     maxFree -= 4;
 
     // Проверяем объем свободного места.
-    if (maxFree < NewImportTableSize)
+    if (maxFree < NewImportTableSize) // Недостаточно свободного места в таблице импорта для занесения информации.
     {
-        std::cerr << "Недостаточно свободного места в таблице импорта для занесения информации об дополнительной библиотеке.\n";
-        UnmapViewOfFile(fBeg);
+        std::cerr << "[ - ] No free space in the import table.\n";
+        UnmapViewOfFile(pFileBegin);
         CloseHandle(hFileMap);
-        return 1;
-    }
-    else
-    {
-        std::cerr << "Достаточно свободного места для занесения дополнительной информации.\n";
+        return EXIT_FAILURE;
     }
 
-    std::cout << "\nНaчинаем процесс внедрения DLL...\n";
+    // Нaчинаем процесс внедрения DLL...
 
     // 1. Копируем старую таблицу импорта в новое место.
-    memcpy(FreePtr, ImportTable, sizeof(IMAGE_IMPORT_DESCRIPTOR) * DLLCounter);
+    memcpy(FreePtr, ImportTable, sizeof(IMAGE_IMPORT_DESCRIPTOR) * dwDLLCounter);
 
     // 2.1 Сохраняем строку с именем нашей DLL в старой таблице импорта (для экономии места).
     memcpy(ImportTable, dll_name.c_str(), dll_name.length());
 
     LPDWORD zeroPtr = reinterpret_cast<LPDWORD>((DWORD)ImportTable + dll_name.length());
-
-
 
     // 2.2 Сохраняем структуру IMAGE_IMPORT_BY_NAME в старой таблице импорта (так же для экономии места).
     IMAGE_IMPORT_BY_NAME myName;
@@ -299,7 +271,7 @@ int main(int argc, char* argv[])
 
     hackRec patch;
     patch.ZeroDword = NULL;
-    patch.IAT = ImportRVA + dll_name.length() + sizeof(hackRec);
+    patch.IAT = ImportRVA + static_cast<DWORD>(dll_name.length()) + sizeof(hackRec);
     patch.IATEnd = NULL;
 
     DWORD IIBN_Table;
@@ -315,8 +287,9 @@ int main(int argc, char* argv[])
     // 2.3. Заполняем структуру IMAGE_IMPORT_BY_NAME данными о нашей DLL.
     IMAGE_IMPORT_DESCRIPTOR myDLL;
 
-    // Вычисляем указатель на нашу структуру IMAGE_IMPORT_BY_NAME: это адрес начала старой таблицы импорта + длинна строки с именем нашей DLL + нулевой DWORD.
-    IIBN_Table = ImportRVA + dll_name.length() + sizeof(DWORD);
+    // Вычисляем указатель на нашу структуру IMAGE_IMPORT_BY_NAME:
+    // это адрес начала старой таблицы импорта + длинна строки с именем нашей DLL + нулевой DWORD.
+    IIBN_Table = ImportRVA + static_cast<DWORD>(dll_name.length()) + sizeof(DWORD);
 
     // Указатель на таблицу Characteristics.
     myDLL.Characteristics = IIBN_Table;
@@ -331,8 +304,7 @@ int main(int argc, char* argv[])
 
     // Записываем в новую таблицу импорта запись о нашей DLL.
     LPVOID OldFreePtr = FreePtr;
-    FreePtr = reinterpret_cast<LPVOID>((DWORD)FreePtr + sizeof(IMAGE_IMPORT_DESCRIPTOR) * DLLCounter);
-
+    FreePtr = reinterpret_cast<LPVOID>((DWORD)FreePtr + sizeof(IMAGE_IMPORT_DESCRIPTOR) * dwDLLCounter);
 
     memcpy(FreePtr, &myDLL, sizeof(IMAGE_IMPORT_DESCRIPTOR));
 
@@ -344,7 +316,7 @@ int main(int argc, char* argv[])
     myDLL.FirstThunk = NULL;
 
     // И записываем её в конец новой таблицы импорта.
-    FreePtr = reinterpret_cast<LPVOID>((DWORD)FreePtr + sizeof(IMAGE_IMPORT_DESCRIPTOR) * DLLCounter);
+    FreePtr = reinterpret_cast<LPVOID>((DWORD)FreePtr + sizeof(IMAGE_IMPORT_DESCRIPTOR) * dwDLLCounter);
 
     memcpy(FreePtr, &myDLL, sizeof(IMAGE_IMPORT_DESCRIPTOR));
 
@@ -353,7 +325,7 @@ int main(int argc, char* argv[])
 
     // Заносим его в DataDirectory.
     pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = NewImportTableRVA;
-    pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = (DLLCounter + 1) * sizeof(IMAGE_IMPORT_DESCRIPTOR);
+    pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = (dwDLLCounter + 1) * sizeof(IMAGE_IMPORT_DESCRIPTOR);
 
     pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress = 0;
     pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size = 0;
@@ -361,10 +333,7 @@ int main(int argc, char* argv[])
     pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].VirtualAddress = 0;
     pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].Size = 0;
 
-
-    std::cout << "Успешно внедрили библиотеку \'azx\'. Для обеспечения работоспособности скопируйте файл azx в директорию модифицированной программы.\n";
-
-    UnmapViewOfFile(fBeg);
+    UnmapViewOfFile(pFileBegin);
     CloseHandle(hFileMap);
 
     std::cout << "\nDone\n";
