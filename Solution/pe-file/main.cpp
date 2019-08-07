@@ -1,7 +1,8 @@
 #include <iostream>
 #include <windows.h>
 
-void parse_error()
+// [ParseError]:
+void ParseError()
 {
     char* msg = nullptr;
     if (FormatMessageA(
@@ -16,29 +17,73 @@ void parse_error()
     {
         if (msg != nullptr)
         {
-            std::cerr << "[-] " << msg << "\n";
+            std::cerr << "[ - ] " << msg << "\n";
             delete[] msg;
         }
     }
 }
+// [/ParseError]
 
+
+// [FileIsExist]:
+bool FileIsExist(const char* szFileName)
+{
+    if (szFileName == nullptr || szFileName[0] == 0)
+    {
+        return false;
+    }
+
+    WIN32_FIND_DATA wfd;
+    HANDLE hFile = FindFirstFile(szFileName, &wfd);
+    if (hFile != INVALID_HANDLE_VALUE)
+    {
+        FindClose(hFile);
+        return true;
+    }
+    return false;
+}
+// [/FileIsExist]
+
+
+// [main]:
 int main(int argc, char* argv[])
 {
-    setlocale(LC_ALL, "Russian");
-
-    if (argc != 3)
+    if (argc != 4)
     {
-        std::cout << "Программа жесткого внедрения DLL библиотек.\n";
-        std::cout << "Usage: pe-file.exe [*.exe || *.dll] [*.dll] [function]";
-        std::cout << "Example: pe-file.exe explorer.exe d142t.dll _init_f_98";
-        return 1;
+        std::cout
+            << "\n Usage:"
+            << "\n   pe-file[64].exe"
+            << "\n      [*.exe || *.dll]  - input PE file"
+            << "\n      [*.dll]           - will be added to the import table"
+            << "\n      [function]        - imported function"
+            << "\n";
+        return EXIT_FAILURE;
     }
+
+    std::cout << "\n";
 
     std::string pe_file = argv[1];
     std::string dll_name = argv[2];
     std::string func_name = argv[3];
 
-    char pe[] = "PE\0\0";
+    if (pe_file.empty() || dll_name.empty() || func_name.empty())
+    {
+        std::cerr << "[ - ] Syntax error.\n";
+        return EXIT_FAILURE;
+    }
+
+    if (!FileIsExist(pe_file.c_str()))
+    {
+        std::cerr << "[ - ] File '" << pe_file << "' not found.\n";
+        return EXIT_FAILURE;
+    }
+
+    setlocale(LC_ALL, "Russian");
+
+    std::cout << "PE file:   " << pe_file << "\n";
+    std::cout << "DLL:       " << dll_name << "\n";
+    std::cout << "Function:  " << func_name << "\n";
+    std::cout << "\n";
 
     typedef struct {
         DWORD ZeroDword;
@@ -50,15 +95,14 @@ int main(int argc, char* argv[])
     IMAGE_FILE_HEADER* pe_head;
     IMAGE_OPTIONAL_HEADER* pe_opt_head;
     IMAGE_SECTION_HEADER* sect;
-
-    std::cout << "Имя файла: " << pe_file << "\n";
+    
 
     HANDLE hFile = CreateFile(pe_file.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE)
     {
         std::cerr << "Ошибка при открытии файла: ";
-        parse_error();
-        return 1;
+        ParseError();
+        return EXIT_FAILURE;
     }
 
     HANDLE hFileMap = CreateFileMapping(hFile, NULL, PAGE_READWRITE, 0, 0, NULL);
@@ -67,7 +111,7 @@ int main(int argc, char* argv[])
     if (hFileMap == NULL)
     {
         std::cerr << "Ошибка при вызове CreateFileMapping(): ";
-        parse_error();
+        ParseError();
         return 1;
     }
 
@@ -77,7 +121,7 @@ int main(int argc, char* argv[])
     if (fBeg == NULL)
     {
         std::cerr << "Ошибка при вызове MapViewOfFile(): ";
-        parse_error();
+        ParseError();
         return 1;
     }
 
@@ -93,7 +137,7 @@ int main(int argc, char* argv[])
     if (fBeg == NULL)
     {
         std::cerr << "Ошибка при вызове MapViewOfFile(): ";
-        parse_error();
+        ParseError();
         CloseHandle(hFileMap);
         return 1;
     }
@@ -103,6 +147,7 @@ int main(int argc, char* argv[])
 
 
     // Проверяем, PE или не PE файл.
+    char pe[] = "PE\0\0";
     if (strcmp(pe, (const char*)pe_head) != 0)
     {
         std::cerr << "Этот файл не является Portable Executable - файлом.\n";
@@ -117,7 +162,7 @@ int main(int argc, char* argv[])
     if (fBeg == NULL)
     {
         std::cerr << "Ошибка при вызове MapViewOfFile(): ";
-        parse_error();
+        ParseError();
         CloseHandle(hFileMap);
         return 1;
     }
@@ -229,7 +274,9 @@ int main(int argc, char* argv[])
         return 1;
     }
     else
+    {
         std::cerr << "Достаточно свободного места для занесения дополнительной информации.\n";
+    }
 
     std::cout << "\nНaчинаем процесс внедрения DLL...\n";
 
@@ -301,15 +348,13 @@ int main(int argc, char* argv[])
 
     memcpy(FreePtr, &myDLL, sizeof(IMAGE_IMPORT_DESCRIPTOR));
 
-    // 3. Устанавливаем указатель на нашу таблицу импорта.
-    // Вычисляем RVA нашей таблицы.
+    // 3. Устанавливаем указатель на нашу таблицу импорта. Вычисляем RVA нашей таблицы.
     DWORD NewImportTableRVA = (DWORD)OldFreePtr - (DWORD)ImportSecBeg + sect->VirtualAddress;
 
     // Заносим его в DataDirectory.
     pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = NewImportTableRVA;
     pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = (DLLCounter + 1) * sizeof(IMAGE_IMPORT_DESCRIPTOR);
 
-    // Additional changes 28.11.2002.
     pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress = 0;
     pe_opt_head->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size = 0;
 
@@ -323,5 +368,6 @@ int main(int argc, char* argv[])
     CloseHandle(hFileMap);
 
     std::cout << "\nDone\n";
-    return 0;
+    return EXIT_SUCCESS;
 }
+// [/main]
