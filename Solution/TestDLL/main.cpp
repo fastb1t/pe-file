@@ -1,9 +1,27 @@
 #include <tchar.h>
 #include <windows.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+    // [init432]:
+    __declspec(dllexport) int init432()
+    {
+        return 0;
+    }
+    // [/init432]
+
+#ifdef __cplusplus
+}
+#endif
+
+
 // [Thread1]:
-DWORD WINAPI Thread1(LPVOID lpObject)
+static DWORD WINAPI Thread1(LPVOID lpObject)
 {
+    Sleep(2000);
+
     HWND hWnd = FindWindow(_T("_test_program_class_"), _T("TestProgram"));
     if (hWnd)
     {
