@@ -336,7 +336,7 @@ int main(int argc, char* argv[])
     UnmapViewOfFile(pFileBegin);
     CloseHandle(hFileMap);
 
-    std::cout << "\nDone\n";
+    std::cout << "\nDone!\n";
     return EXIT_SUCCESS;
 }
 // [/main]
