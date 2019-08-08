@@ -2,16 +2,18 @@
 #include <windows.h>
 
 // [FileIsExist]:
-bool FileIsExist(const char* szFileName)
+static bool FileIsExist(const char* szFileName)
 {
-    if (szFileName == nullptr || szFileName[0] == 0)
+    if (!szFileName || !szFileName[0])
     {
         return false;
     }
 
     WIN32_FIND_DATA wfd;
+    memset(&wfd, 0, sizeof(WIN32_FIND_DATA));
+
     HANDLE hFile = FindFirstFileA(szFileName, &wfd);
-    if (hFile != INVALID_HANDLE_VALUE)
+    if (hFile)
     {
         FindClose(hFile);
         return true;
@@ -24,14 +26,14 @@ bool FileIsExist(const char* szFileName)
 // [main]:
 int main(int argc, char* argv[])
 {
+    std::string pe_file;
+    std::string dll_name;
+    std::string func_name;
+
     IMAGE_DOS_HEADER* mz_head = nullptr;
     IMAGE_FILE_HEADER* pe_head = nullptr;
     IMAGE_OPTIONAL_HEADER* pe_opt_head = nullptr;
     IMAGE_SECTION_HEADER* sect = nullptr;
-
-    std::string pe_file;
-    std::string dll_name;
-    std::string func_name;
 
     if (argc != 4)
     {
@@ -67,7 +69,7 @@ int main(int argc, char* argv[])
     std::cout << "DLL:       " << dll_name << "\n";
     std::cout << "Function:  " << func_name << "\n";
     std::cout << "\n";
-    
+
 
     HANDLE hFile = CreateFileA(
         pe_file.c_str(),
@@ -166,7 +168,6 @@ int main(int argc, char* argv[])
     }
 
     sect++;
-
     DWORD dwAfterImportSecBeg = (DWORD)pFileBegin + sect->PointerToRawData;
     sect--;
 
@@ -260,7 +261,7 @@ int main(int argc, char* argv[])
     lpdwZeroPtr = reinterpret_cast<LPDWORD>((DWORD)lpdwZeroPtr + func_name.length() + 1);
     memcpy(lpdwZeroPtr, &myName, sizeof(IMAGE_IMPORT_BY_NAME));
 
-    
+
     DWORD dwIIBN_Table = dwImportRVA + static_cast<DWORD>(dll_name.length()) + sizeof(DWORD);
 
     IMAGE_IMPORT_DESCRIPTOR myDLL;
